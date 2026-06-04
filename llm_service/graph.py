@@ -1,13 +1,27 @@
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"The default value of `allowed_objects` will change in a future version.*",
+)
+warnings.filterwarnings("ignore", module=r"langgraph\.checkpoint\.base.*")
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from typing import  Literal
 from langgraph.graph import MessagesState
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
+from pathlib import Path
 import logging
 
 
 logger = logging.getLogger(__name__)
+SYSTEM_PROMPT_PATH = Path(__file__).resolve().parent / "system_prompt.txt"
+
+
+def load_system_prompt() -> str:
+    return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
 
 
 class GraphBuilder:
@@ -20,6 +34,7 @@ class GraphBuilder:
         self.tools = tools
         self.llm_model = llm_model
         self.gemini_api_key = gemini_api_key
+        self.system_prompt = load_system_prompt()
         self.workflow = StateGraph(MessagesState)
         self._build_graph()
 
@@ -34,9 +49,10 @@ class GraphBuilder:
         """Call the model to generate a response based on the current state. Given
         the question, it will decide to retrieve using the retriever tool, or simply respond to the user.
         """
+        messages = [{"role": "system", "content": self.system_prompt}, *state["messages"]]
         response = (
             self._llm()
-            .bind_tools([self.tools]).invoke(state["messages"])  
+            .bind_tools([self.tools]).invoke(messages)  
         )
         return {"messages": [response]}
     
@@ -66,7 +82,10 @@ class GraphBuilder:
             response = (
                 self._llm()
                 .with_structured_output(GradeDocuments).invoke(  
-                    [{"role": "user", "content": prompt}]
+                    [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": prompt},
+                    ]
                 )
             )
             score = response.binary_score
@@ -94,7 +113,12 @@ class GraphBuilder:
         question = messages[0].content
         prompt = REWRITE_PROMPT.format(question=question)
         response_model = self._llm()
-        response = response_model.invoke([{"role": "user", "content": prompt}])
+        response = response_model.invoke(
+            [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+        )
         return {"messages": [{"role": "user", "content": response.content}]}   
 
     def generate_answer(self, state: MessagesState):
@@ -111,7 +135,12 @@ class GraphBuilder:
         context = state["messages"][-1].content
         prompt = GENERATE_PROMPT.format(question=question, context=context)
         response_model = self._llm()
-        response = response_model.invoke([{"role": "user", "content": prompt}])
+        response = response_model.invoke(
+            [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": prompt},
+            ]
+        )
         return {"messages": [response]} 
 
     def _build_graph(self):

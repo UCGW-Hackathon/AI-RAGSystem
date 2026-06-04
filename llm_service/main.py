@@ -14,9 +14,17 @@ warnings.filterwarnings(
     "ignore",
     message=r"The default value of `allowed_objects` will change in a future version.*",
 )
+warnings.filterwarnings("ignore", module=r"langgraph\.checkpoint\.base.*")
 
 from schemas import QuestionRequest, AnswerResponse ,UrlInjectionRequest , MetadataQueryResponse, DeleteRequest
-from vectordb import  add_urls_to_vectorstore ,get_metadata_counts, delete_by_metadata ,get_qdrant_client
+from vectordb import (
+    add_urls_to_vectorstore,
+    delete_by_metadata,
+    get_metadata_counts,
+    get_qdrant_client,
+    lookup_service_codes,
+    search_service_fixed_prices,
+)
 from graph import GraphBuilder
 from tools import get_retriever_tool, refresh_retriever
 from config import settings
@@ -25,6 +33,7 @@ from typing import  Any
 import os
 import time
 import logging
+import re
 
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -33,6 +42,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 logger = logging.getLogger("agentic_rag_api")
+SERVICE_CODE_RE = re.compile(r"\b[A-Z]{2}-\d{3}\b")
+PRICE_QUERY_RE = re.compile(r"\b(harga|biaya|tarif|ongkos|jasa|layanan|cuci|service)\b", re.IGNORECASE)
 
 
 @asynccontextmanager
@@ -215,6 +226,137 @@ def _run_graph_answer(graph, user_question: str) -> tuple[str, list[str]]:
     return final_answer or "I don't know.", sources
 
 
+def detect_service_codes(question: str) -> list[str]:
+    return list(dict.fromkeys(match.upper() for match in SERVICE_CODE_RE.findall(question.upper())))
+
+
+def parse_service_price_inputs(question: str) -> dict[str, int]:
+    prices = {}
+    for code in detect_service_codes(question):
+        pattern = re.compile(
+            rf"\b{re.escape(code)}\b\s*(?:=|:)?\s*(?:Rp\s*)?([0-9][0-9.,]*)",
+            re.IGNORECASE,
+        )
+        match = pattern.search(question)
+        if match:
+            raw_price = re.sub(r"[^\d]", "", match.group(1))
+            if raw_price:
+                prices[code] = int(raw_price)
+    return prices
+
+
+def evaluate_price(harga_input: int, harga_patokan: int, tolerance: float = 0.35) -> dict:
+    selisih = harga_input - harga_patokan
+    selisih_persen = round((selisih / harga_patokan) * 100, 2) if harga_patokan else None
+    batas_toleransi = round(harga_patokan * (1 + tolerance)) if harga_patokan else None
+    status = "wajar" if harga_patokan and harga_input <= batas_toleransi else "overprice"
+    return {
+        "harga_input": harga_input,
+        "harga_patokan": harga_patokan,
+        "selisih": selisih,
+        "selisih_persen": selisih_persen,
+        "batas_toleransi_35": batas_toleransi,
+        "status": status
+    }
+
+
+def _format_currency(value) -> str:
+    if value is None:
+        return "-"
+    value = int(value)
+    prefix = "-Rp" if value < 0 else "Rp"
+    return f"{prefix}{abs(value):,}".replace(",", ".")
+
+
+def _format_exact_service_answer(codes: list[str], records: list[dict], price_inputs: dict[str, int]) -> tuple[str, list[str]]:
+    by_code = {record.get("service_code"): record for record in records}
+    sources = []
+    lines = ["Berikut hasil berdasarkan knowledge base SiTukang:"]
+    total_input = 0
+    total_patokan = 0
+    statuses = []
+
+    for index, code in enumerate(codes, start=1):
+        record = by_code.get(code)
+        if not record:
+            lines.append(f"{index}. {code}")
+            lines.append("   Data harga untuk kode ini belum tersedia di knowledge base SiTukang.")
+            continue
+
+        source = record.get("source")
+        if source and source not in sources:
+            sources.append(source)
+
+        harga_patokan = int(record.get("harga_patokan") or 0)
+        total_patokan += harga_patokan
+        lines.append(f"{index}. {record.get('service_name', code)}")
+        lines.append(f"   Service code: {code}.")
+        lines.append(f"   Harga patokan: {_format_currency(harga_patokan)} {record.get('unit', '')}.")
+        lines.append(f"   Source key: {record.get('source_key', '-')}.")
+        lines.append(f"   Source confidence: {record.get('source_confidence', '-')}.")
+
+        if code in price_inputs:
+            harga_input = price_inputs[code]
+            total_input += harga_input
+            evaluation = evaluate_price(harga_input, harga_patokan)
+            statuses.append(evaluation["status"])
+            lines.append(f"   Harga input: {_format_currency(harga_input)}.")
+            lines.append(
+                f"   Selisih: {_format_currency(evaluation['selisih'])} "
+                f"atau {evaluation['selisih_persen']}%."
+            )
+            lines.append(f"   Batas toleransi +35%: {_format_currency(evaluation['batas_toleransi_35'])}.")
+            lines.append(f"   Status: {evaluation['status']}.")
+
+    if price_inputs and total_patokan:
+        total_eval = evaluate_price(total_input, total_patokan)
+        if "overprice" in statuses:
+            decision = "perlu klarifikasi / overprice sebagian"
+        elif statuses and all(status == "wajar" for status in statuses):
+            decision = "pengajuan wajar"
+        else:
+            decision = total_eval["status"]
+
+        lines.append("")
+        lines.append("Keputusan akhir:")
+        lines.append(
+            f"Total harga input adalah {_format_currency(total_input)}, "
+            f"total harga patokan {_format_currency(total_patokan)}, "
+            f"dengan selisih {_format_currency(total_eval['selisih'])} "
+            f"atau {total_eval['selisih_persen']}%. "
+            f"Batas toleransi +35% adalah {_format_currency(total_eval['batas_toleransi_35'])}. "
+            f"Status akhir: {decision}."
+        )
+    if sources:
+        lines.append("")
+        lines.append("Data diambil dari database harga jasa SiTukang.")
+
+    return "\n".join(lines), sources
+
+
+def _format_service_search_answer(records: list[dict]) -> tuple[str, list[str]]:
+    if not records:
+        return "Data harga jasa yang relevan belum ditemukan.", []
+
+    sources = []
+    lines = ["Layanan fixed price yang paling relevan:"]
+    for index, record in enumerate(records, start=1):
+        source = record.get("source")
+        if source and source not in sources:
+            sources.append(source)
+        lines.append(
+            f"{index}. {record.get('service_name', '-')}\n"
+            f"   Service code: {record.get('service_code', '-')}.\n"
+            f"   Harga patokan: {_format_currency(record.get('harga_patokan'))} {record.get('unit', '')}.\n"
+            f"   Kategori: {record.get('category', '-')}.\n"
+            f"   Source key: {record.get('source_key', '-')}."
+        )
+    if sources:
+        lines.append("")
+        lines.append("Data diambil dari database harga jasa SiTukang.")
+    return "\n".join(lines), sources
+
+
 # ------------------------------------------------------------------------------
 # Routes
 # ------------------------------------------------------------------------------
@@ -229,6 +371,20 @@ async def ask_question(request: QuestionRequest):
         question = request.question.strip()
         if not question:
             raise HTTPException(status_code=400, detail="Question cannot be empty")
+
+        service_codes = detect_service_codes(question)
+        if service_codes:
+            records = lookup_service_codes(service_codes)
+            price_inputs = parse_service_price_inputs(question)
+            answer_text, sources = _format_exact_service_answer(service_codes, records, price_inputs)
+            elapsed = time.perf_counter() - start
+            return AnswerResponse(answer=answer_text, sources=sources, processing_time=f"{elapsed:.2f}")
+
+        if PRICE_QUERY_RE.search(question):
+            records = search_service_fixed_prices(question)
+            answer_text, sources = _format_service_search_answer(records)
+            elapsed = time.perf_counter() - start
+            return AnswerResponse(answer=answer_text, sources=sources, processing_time=f"{elapsed:.2f}")
 
         # Defensive: build once if not available (e.g., lazy import scenarios)
         global _graph
