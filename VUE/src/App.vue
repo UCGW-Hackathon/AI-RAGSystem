@@ -29,6 +29,11 @@ onMounted(() => {
 });
 
 const getLLM = async () => {
+    if (!querytext.value.trim()) {
+        toast.add({severity:'warn', summary: 'Warning', detail: 'Please enter a question', life: 3000});
+        return;
+    }
+
     loading.value = true;
     error.value = null;
     llmtext.value = ''
@@ -202,7 +207,7 @@ const deleteByMetadata = async (url) => {
                     <!-- Stats Bar -->
                     <div class="flex space-x-4 mb-6">
                         <div class="flex-1 bg-indigo-50 p-4 rounded-lg">
-                            <div class="text-indigo-700 font-semibold">Ollama model</div>
+                            <div class="text-indigo-700 font-semibold">Gemini model</div>
                             <div class="text-indigo-900 text-xl font-bold">{{ llm_model || 'Loading...' }}</div>
                         </div>
                         <div class="flex-1 bg-indigo-50 p-4 rounded-lg">
@@ -322,7 +327,7 @@ const deleteByMetadata = async (url) => {
 
         <!-- Footer -->
         <footer class="text-center text-indigo-600 mt-8 p-4">
-            <p>Powered by Mahdi Eskandari | Ollama GPU Accelerated  | Vector Database Integration | © 2025</p>
+            <p>Powered by Mahdi Eskandari | Gemini API | Vector Database Integration | © 2025</p>
             <a href="https://github.com/Fizmath" target="_blank" rel="noopener noreferrer" class="text-primary font-bold hover:underline">Github</a>
         </footer>
     </div>

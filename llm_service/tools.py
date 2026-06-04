@@ -29,7 +29,8 @@ class RetrieverToolManager:
         return create_retriever_tool(
             self._retriever,
             "retrieve_blog_posts",
-            "Search and return information about Lilian Weng blog posts.",
+            "Search and return information from the uploaded knowledge base.",
+            response_format="content_and_artifact",
         )
 
     def get_tool(self):

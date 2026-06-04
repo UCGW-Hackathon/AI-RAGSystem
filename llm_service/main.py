@@ -1,8 +1,19 @@
-import contextlib
+import sys
+import warnings
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"The default value of `allowed_objects` will change in a future version.*",
+)
 
 from schemas import QuestionRequest, AnswerResponse ,UrlInjectionRequest , MetadataQueryResponse, DeleteRequest
 from vectordb import  add_urls_to_vectorstore ,get_metadata_counts, delete_by_metadata ,get_qdrant_client
@@ -13,7 +24,6 @@ from typing import  Any
 
 import os
 import time
-import io
 import logging
 
 
@@ -30,13 +40,7 @@ async def lifespan(app: FastAPI):
     # Startup logic
     _init_locks()
     logger.info("Starting Agentic RAG API...")
-    try:
-        _compile_global_graph(refresh_tools=False)
-        logger.info("Startup complete.")
-    except Exception as e:
-        logger.exception("Failed to build initial graph: %s", e)
-        # Optionally re-raise if you want to fail fast
-        # raise
+    logger.info("Startup complete. RAG graph will be built lazily on first use.")
 
     yield  # App runs here
 
@@ -78,7 +82,11 @@ def _build_graph(tools) -> Any:
     """
     Compile and return a graph using the provided tools and selected LLM.
     """
-    graph_builder = GraphBuilder(tools, llm_model=settings.LLM_MODEL)
+    graph_builder = GraphBuilder(
+        tools,
+        llm_model=settings.LLM_MODEL,
+        gemini_api_key=settings.GEMINI_API_KEY,
+    )
     return graph_builder.compile()
 
 
@@ -140,9 +148,10 @@ def refresh_retriever_background(force_graph_refresh: bool = True):
     """
     try:
         logger.info("Refreshing retriever in background...")
-        refresh_retriever()
         if force_graph_refresh:
             _maybe_refresh_graph_debounced(force=True)
+        else:
+            refresh_retriever()
         logger.info("Retriever refresh complete.")
     except Exception as e:
         logger.exception("Background retriever refresh failed: %s", e)
@@ -151,32 +160,59 @@ def refresh_retriever_background(force_graph_refresh: bool = True):
 # ------------------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------------------
-def _stream_graph_answer(graph, user_question: str) -> str:
+def _extract_sources_from_artifact(artifact) -> list[str]:
     """
-    Streams LangGraph updates to a buffer and returns the full formatted text.
-    This preserves your existing UX (pretty_print) while returning as text.
+    Extract unique source URLs/paths from retriever artifacts.
     """
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        for chunk in graph.stream(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": user_question,
-                    }
-                ]
-            }
-        ):
-            for node, update in chunk.items():
-                print("Update from node", node)
-                # Guard in case structure changes
-                try:
-                    update["messages"][-1].pretty_print()
-                except Exception:
-                    print(update)
-                print("\n\n")
-    return buf.getvalue()
+    sources = []
+    if not artifact:
+        return sources
+
+    docs = artifact if isinstance(artifact, list) else [artifact]
+    for doc in docs:
+        metadata = getattr(doc, "metadata", None) or {}
+        source = metadata.get("source")
+        if source and source not in sources:
+            sources.append(source)
+    return sources
+
+
+def _run_graph_answer(graph, user_question: str) -> tuple[str, list[str]]:
+    """
+    Run LangGraph and return only the final answer plus retrieved sources.
+    """
+    final_answer = None
+    sources = []
+
+    for chunk in graph.stream(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": user_question,
+                }
+            ]
+        }
+    ):
+        if "retrieve" in chunk:
+            messages = chunk["retrieve"].get("messages", [])
+            if messages:
+                artifact = getattr(messages[-1], "artifact", None)
+                for source in _extract_sources_from_artifact(artifact):
+                    if source not in sources:
+                        sources.append(source)
+
+        if "generate_answer" in chunk:
+            messages = chunk["generate_answer"].get("messages", [])
+            if messages:
+                final_answer = messages[-1].content
+
+        if "generate_query_or_respond" in chunk and final_answer is None:
+            messages = chunk["generate_query_or_respond"].get("messages", [])
+            if messages and not getattr(messages[-1], "tool_calls", None):
+                final_answer = messages[-1].content
+
+    return final_answer or "I don't know.", sources
 
 
 # ------------------------------------------------------------------------------
@@ -186,18 +222,24 @@ def _stream_graph_answer(graph, user_question: str) -> str:
 async def ask_question(request: QuestionRequest):
     """
     Ask a question to the Agentic RAG pipeline.
-    Returns the pretty-printed execution trace as the answer for transparency.
+    Returns the final answer and simple source citations.
     """
     start = time.perf_counter()
     try:
+        question = request.question.strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Question cannot be empty")
+
         # Defensive: build once if not available (e.g., lazy import scenarios)
         global _graph
         if _graph is None:
             _compile_global_graph(refresh_tools=False)
 
-        answer_text = _stream_graph_answer(_graph, request.question)
+        answer_text, sources = _run_graph_answer(_graph, question)
         elapsed = time.perf_counter() - start
-        return AnswerResponse(answer=answer_text, processing_time=f"{elapsed:.2f}")
+        return AnswerResponse(answer=answer_text, sources=sources, processing_time=f"{elapsed:.2f}")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Error in /ask: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -316,7 +358,7 @@ async def get_config():
     }
 
 
-app.mount("/", StaticFiles(directory="dist", html=True), name="static")  #  uncomment when using embedded dist 
+app.mount("/", StaticFiles(directory=str(BASE_DIR / "dist"), html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn

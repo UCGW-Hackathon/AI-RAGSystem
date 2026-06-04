@@ -6,7 +6,8 @@ class QuestionRequest(BaseModel):
 
 class AnswerResponse(BaseModel):
     answer: str
-    processing_time: float 
+    processing_time: float
+    sources: List[str] = []
 
 class UrlInjectionRequest(BaseModel):
     urls: List[str]

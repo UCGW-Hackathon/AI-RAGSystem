@@ -1,12 +1,17 @@
 from typing import List ,Dict, Tuple
 from fastapi import HTTPException
+from config import settings
+import os
+
+if settings.USER_AGENT:
+    os.environ.setdefault("USER_AGENT", settings.USER_AGENT)
+
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance
-from config import settings
 from collections import defaultdict
 import re
 
@@ -23,6 +28,12 @@ def get_embeddings():
     )
 
 def get_qdrant_client():
+    if settings.QDRANT_URL:
+        return QdrantClient(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY,
+        )
+
     return QdrantClient(host=settings.QDRANT_HOST, port=settings.QDRANT_PORT)
 
 def add_urls_to_vectorstore(urls: List[str], vector_store: QdrantVectorStore = None) -> Tuple[int, List[str]]:
@@ -44,7 +55,7 @@ def add_urls_to_vectorstore(urls: List[str], vector_store: QdrantVectorStore = N
 
     for a_url in urls:
         try:
-            print(f"Processing URL: {a_url}")
+            logger.info("Processing URL: %s", a_url)
             docs = WebBaseLoader(a_url).load()
             docs_list = [docs] if not isinstance(docs, list) else docs
 
@@ -59,14 +70,14 @@ def add_urls_to_vectorstore(urls: List[str], vector_store: QdrantVectorStore = N
             for doc in doc_splits:
                 doc.metadata.pop("description", None)  # Safely remove description
 
-            print(f"Created {len(doc_splits)} chunks from URL: {a_url}")
+            logger.info("Created %s chunks from URL: %s", len(doc_splits), a_url)
 
             vector_store.add_documents(
                 documents=doc_splits, 
                 wait=True
             )
             total_added_chunks += len(doc_splits)
-            print(f"Added {len(doc_splits)} documents to vector store")
+            logger.info("Added %s documents to vector store", len(doc_splits))
 
         except Exception as e:
             error_msg = f"Failed processing URL {a_url}: {str(e)}"
@@ -174,7 +185,7 @@ def delete_by_metadata(metadata_value: str) -> int:
         if next_offset is None:
             break
     
-    print(f"Found {len(points_to_delete)} points to delete")
+    logger.info("Found %s points to delete", len(points_to_delete))
     
     # Delete the points by their IDs
     if points_to_delete:
