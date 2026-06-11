@@ -94,8 +94,8 @@ jobs:
           tags: |
             ${{ env.IMAGE_API }}:${{ steps.meta.outputs.tag }}
             ${{ env.IMAGE_API }}:latest
-          cache-from: type=registry,ref=${{ env.IMAGE_API }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE_API }}:buildcache,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   # ─────────────────────────────────────────────────────────────────────────
   # Job 3: Deploy to Azure Web App
