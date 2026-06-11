@@ -1,6 +1,5 @@
 import os
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass
 
 try:
     from dotenv import load_dotenv
@@ -10,11 +9,12 @@ except ImportError:
     pass
 
 
-def _parse_origins(raw: str | None) -> List[str]:
+def _parse_origins(raw: str | None) -> list[str]:
     """Parse comma-separated CORS origins from env var."""
     if not raw:
         return ["*"]
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
 
 
 @dataclass
@@ -50,7 +50,7 @@ class Settings:
     WORKER_MAX_RETRIES: int = int(os.getenv("WORKER_MAX_RETRIES", 3))
 
     @property
-    def ALLOWED_ORIGINS(self) -> List[str]:
+    def ALLOWED_ORIGINS(self) -> list[str]:
         return _parse_origins(self.ALLOWED_ORIGINS_RAW)
 
     @property

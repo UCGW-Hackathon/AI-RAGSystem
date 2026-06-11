@@ -1,4 +1,4 @@
-from typing import List ,Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any
 from fastapi import HTTPException
 from config import settings
 import os
@@ -6,17 +6,17 @@ import os
 if settings.USER_AGENT:
     os.environ.setdefault("USER_AGENT", settings.USER_AGENT)
 
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_core.documents import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from qdrant_client.models import FieldCondition, Filter, MatchValue, PayloadSchemaType, VectorParams, Distance
-from collections import defaultdict
-import json
-import re
-import requests
+from langchain_community.document_loaders import WebBaseLoader  # noqa: E402
+from langchain_core.documents import Document  # noqa: E402
+from langchain_text_splitters import RecursiveCharacterTextSplitter  # noqa: E402
+from langchain_huggingface import HuggingFaceEmbeddings  # noqa: E402
+from langchain_qdrant import QdrantVectorStore  # noqa: E402
+from qdrant_client import QdrantClient  # noqa: E402
+from qdrant_client.models import FieldCondition, Filter, MatchValue, PayloadSchemaType, VectorParams, Distance  # noqa: E402
+from collections import defaultdict  # noqa: E402
+import json  # noqa: E402
+import re  # noqa: E402
+import requests  # noqa: E402
 
 import logging
 
@@ -29,6 +29,7 @@ def get_embeddings():
         model_name=settings.EMBEDDINGS_MODEL,
         model_kwargs={'device': "cpu"}
     )
+
 
 def get_qdrant_client():
     if settings.QDRANT_URL:
@@ -103,9 +104,7 @@ def _service_fixed_price_filter() -> Filter:
 
 
 def lookup_service_codes(codes: List[str]) -> List[Dict[str, Any]]:
-    """
-    Exact service lookup by service_code. This intentionally avoids vector search.
-    """
+    """Exact service lookup by service_code. This intentionally avoids vector search."""
     client = get_qdrant_client()
     ensure_payload_indexes(client)
     records = []
@@ -133,9 +132,7 @@ def lookup_service_codes(codes: List[str]) -> List[Dict[str, Any]]:
 
 
 def search_service_fixed_prices(query: str, limit: int = 4) -> List[Dict[str, Any]]:
-    """
-    Semantic search for fixed-price services, constrained to service_fixed_price docs.
-    """
+    """Semantic search for fixed-price services, constrained to service_fixed_price docs."""
     client = get_qdrant_client()
     ensure_payload_indexes(client)
 
@@ -229,10 +226,11 @@ def _jsonl_url_to_documents(source_url: str) -> List[Document]:
 
     return documents
 
+
 def add_urls_to_vectorstore(urls: List[str], vector_store: QdrantVectorStore = None) -> Tuple[int, List[str]]:
     errors = []
     total_added_chunks = 0
-    
+
     try:
         if vector_store is None:
             embeddings = get_embeddings()
@@ -269,14 +267,14 @@ def add_urls_to_vectorstore(urls: List[str], vector_store: QdrantVectorStore = N
                     chunk_size=200, chunk_overlap=50
                 )
                 doc_splits = text_splitter.split_documents(docs_list)
-                
+
                 for doc in doc_splits:
                     doc.metadata.pop("description", None)  # Safely remove description
 
             logger.info("Created %s chunks from URL: %s", len(doc_splits), a_url)
 
             vector_store.add_documents(
-                documents=doc_splits, 
+                documents=doc_splits,
                 wait=True
             )
             total_added_chunks += len(doc_splits)
@@ -309,7 +307,7 @@ def initialize_vectorstore():
         collection_name=settings.COLLECTION_NAME,
         embedding=embeddings,
     )
-                
+
     return vector_store.as_retriever()
 
 
@@ -317,7 +315,7 @@ def get_metadata_counts() -> Dict[str, int]:
     """Get counts of chunks by metadata"""
     client = get_qdrant_client()
     counts = defaultdict(int)
-    
+
     # Scroll through all points to collect metadata counts
     next_offset = None
     while True:
@@ -327,10 +325,10 @@ def get_metadata_counts() -> Dict[str, int]:
             offset=next_offset,
             with_payload=True
         )
-        
+
         if not points:
             break
-            
+
         for point in points:
             # Check different possible ways metadata might be stored
             if point.payload:
@@ -344,23 +342,24 @@ def get_metadata_counts() -> Dict[str, int]:
                     if 'source' in metadata:
                         source = metadata['source']
                         counts[source] += 1
-        
+
         if next_offset is None:
             break
-            
+
     return dict(counts)
+
 
 def delete_by_metadata(metadata_value: str) -> int:
     """Delete vectors by metadata value using a more direct approach
-    
+
        There are better ways , but i prefer with  more control
     """
     client = get_qdrant_client()
-    
+
     # Scroll through all points to find those with matching metadata
     points_to_delete = []
     next_offset = None
-    
+
     while True:
         points, next_offset = client.scroll(
             collection_name=settings.COLLECTION_NAME,
@@ -368,10 +367,10 @@ def delete_by_metadata(metadata_value: str) -> int:
             offset=next_offset,
             with_payload=True
         )
-        
+
         if not points:
             break
-            
+
         for point in points:
             # Check different possible ways metadata might be stored
             payload = point.payload
@@ -380,23 +379,24 @@ def delete_by_metadata(metadata_value: str) -> int:
                 if "source" in payload and payload["source"] == metadata_value:
                     points_to_delete.append(point.id)
                 # Check nested metadata.source field
-                elif ("metadata" in payload and 
-                      isinstance(payload["metadata"], dict) and 
-                      "source" in payload["metadata"] and 
-                      payload["metadata"]["source"] == metadata_value):
+                elif (
+                    "metadata" in payload
+                    and isinstance(payload["metadata"], dict)
+                    and "source" in payload["metadata"]
+                    and payload["metadata"]["source"] == metadata_value
+                ):
                     points_to_delete.append(point.id)
-        
+
         if next_offset is None:
             break
-    
+
     logger.info("Found %s points to delete", len(points_to_delete))
-    
+
     # Delete the points by their IDs
     if points_to_delete:
         client.delete(
             collection_name=settings.COLLECTION_NAME,
             points_selector=points_to_delete
         )
-    
-    return len(points_to_delete)
 
+    return len(points_to_delete)

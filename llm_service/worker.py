@@ -17,7 +17,6 @@ Environment variables (same as main service + CLOUDAMQP_URL required):
 import sys
 import json
 import logging
-import os
 import signal
 import time
 from pathlib import Path
@@ -26,11 +25,11 @@ BASE_DIR = Path(__file__).resolve().parent
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
-import pika
-import pika.exceptions
+import pika  # noqa: E402
+import pika.exceptions  # noqa: E402
 
-from config import settings
-from vectordb import add_urls_to_vectorstore, initialize_vectorstore
+from config import settings  # noqa: E402
+from vectordb import add_urls_to_vectorstore, initialize_vectorstore  # noqa: E402
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(

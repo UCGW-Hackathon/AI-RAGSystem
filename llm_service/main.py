@@ -2,7 +2,13 @@ import sys
 import warnings
 import uuid
 import json
+import os
+import time
+import logging
+import re
 from pathlib import Path
+from typing import Any
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +24,7 @@ warnings.filterwarnings(
 )
 warnings.filterwarnings("ignore", module=r"langgraph\.checkpoint\.base.*")
 
-from schemas import (
+from schemas import (  # noqa: E402
     QuestionRequest,
     AnswerResponse,
     UrlInjectionRequest,
@@ -28,7 +34,7 @@ from schemas import (
     MetadataQueryResponse,
     HealthResponse,
 )
-from vectordb import (
+from vectordb import (  # noqa: E402
     add_urls_to_vectorstore,
     delete_by_metadata,
     get_metadata_counts,
@@ -36,15 +42,9 @@ from vectordb import (
     lookup_service_codes,
     search_service_fixed_prices,
 )
-from graph import GraphBuilder
-from tools import get_retriever_tool, refresh_retriever
-from config import settings
-from typing import Any
-
-import os
-import time
-import logging
-import re
+from graph import GraphBuilder  # noqa: E402
+from tools import get_retriever_tool, refresh_retriever  # noqa: E402
+from config import settings  # noqa: E402
 
 
 LOG_LEVEL = settings.LOG_LEVEL
