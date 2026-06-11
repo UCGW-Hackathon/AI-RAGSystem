@@ -1,4 +1,5 @@
 services:
+  # ── Main FastAPI Service ───────────────────────────────────────────────────
   llm_service:
     build:
       context: ./llm_service
@@ -9,18 +10,79 @@ services:
       - LLM_MODEL=${LLM_MODEL:-gemini-flash-lite-latest}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - COLLECTION_NAME=${COLLECTION_NAME:-my_collection}
-      - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-sentence-transformers/all-mpnet-base-v2}
+      - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       - QDRANT_URL=${QDRANT_URL}
       - QDRANT_API_KEY=${QDRANT_API_KEY}
       - QDRANT_HOST=${QDRANT_HOST:-qdrant}
       - QDRANT_PORT=${QDRANT_PORT:-6333}
       - USER_AGENT=${USER_AGENT:-myagent}
+      - CLOUDAMQP_URL=${CLOUDAMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:80,http://localhost:3000}
     volumes:
       - ${PWD}/documents:/app/documents
     ports:
       - "80:8001"
     networks:
       - agentic-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── AMQP Worker ────────────────────────────────────────────────────────────
+  rag_worker:
+    build:
+      context: ./llm_service
+      dockerfile: Dockerfile.worker
+    container_name: rag_worker
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - COLLECTION_NAME=${COLLECTION_NAME:-my_collection}
+      - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_HOST=${QDRANT_HOST:-qdrant}
+      - QDRANT_PORT=${QDRANT_PORT:-6333}
+      - CLOUDAMQP_URL=${CLOUDAMQP_URL:-amqp://guest:guest@rabbitmq:5672/}
+      - AMQP_QUEUE_INJECT=${AMQP_QUEUE_INJECT:-rag.inject}
+      - AMQP_EXCHANGE=${AMQP_EXCHANGE:-rag}
+      - WORKER_PREFETCH_COUNT=${WORKER_PREFETCH_COUNT:-1}
+      - WORKER_MAX_RETRIES=${WORKER_MAX_RETRIES:-3}
+    volumes:
+      - ${PWD}/documents:/app/documents
+    networks:
+      - agentic-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Local RabbitMQ (dev/testing only — use CloudAMQP in production) ────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI — http://localhost:15672
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    networks:
+      - agentic-net
+    restart: unless-stopped
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
 networks:
   agentic-net:

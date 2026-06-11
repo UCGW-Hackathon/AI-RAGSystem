@@ -1,5 +1,43 @@
-.env
+# ─── Python ──────────────────────────────────────────────────────────────────
 .venv/
 .venv311/
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ─── Environment & Secrets ───────────────────────────────────────────────────
+.env
+env
+.env.local
+.env.*.local
+*.secret
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+uvicorn.stdout.log
+uvicorn.stderr.log
+
+# ─── Documents / Models ──────────────────────────────────────────────────────
+documents/
+llm_service/documents/
+*.png
+*.jpg
+*.jpeg
+# Keep dist (embedded frontend)
+!llm_service/dist/
+
+# ─── IDE ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
