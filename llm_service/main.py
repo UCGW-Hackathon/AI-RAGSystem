@@ -75,6 +75,18 @@ def _get_amqp_lock():
     return _amqp_lock
 
 
+def _reset_amqp_connection():
+    global _amqp_connection, _amqp_channel
+    with _get_amqp_lock():
+        try:
+            if _amqp_connection and not _amqp_connection.is_closed:
+                _amqp_connection.close()
+        except Exception:
+            pass
+        _amqp_connection = None
+        _amqp_channel = None
+
+
 def _get_amqp_channel():
     """Return a live AMQP channel, reconnecting if necessary."""
     global _amqp_connection, _amqp_channel
@@ -82,10 +94,19 @@ def _get_amqp_channel():
 
     with _get_amqp_lock():
         try:
-            if _amqp_channel and _amqp_channel.is_open:
+            if _amqp_connection and _amqp_connection.is_open and _amqp_channel and _amqp_channel.is_open:
                 return _amqp_channel
         except Exception:
             pass
+
+        # If it was dead or closed, reset first
+        try:
+            if _amqp_connection and not _amqp_connection.is_closed:
+                _amqp_connection.close()
+        except Exception:
+            pass
+        _amqp_connection = None
+        _amqp_channel = None
 
         params = pika.URLParameters(settings.CLOUDAMQP_URL)
         params.socket_timeout = 5
@@ -122,22 +143,30 @@ def _get_amqp_channel():
 
 
 def _publish_inject_job(job_id: str, urls: list[str]) -> None:
-    """Publish inject job to AMQP queue."""
+    """Publish inject job to AMQP queue with automatic reconnection retry."""
     import pika
 
-    channel = _get_amqp_channel()
-    payload = json.dumps({"job_id": job_id, "urls": urls})
-    channel.basic_publish(
-        exchange=settings.AMQP_EXCHANGE,
-        routing_key=settings.AMQP_QUEUE_INJECT,
-        body=payload,
-        properties=pika.BasicProperties(
-            delivery_mode=2,  # persistent
-            content_type="application/json",
-            message_id=job_id,
-        ),
-    )
-    logger.info("Published inject job %s with %d URLs", job_id, len(urls))
+    for attempt in range(2):
+        try:
+            channel = _get_amqp_channel()
+            payload = json.dumps({"job_id": job_id, "urls": urls})
+            channel.basic_publish(
+                exchange=settings.AMQP_EXCHANGE,
+                routing_key=settings.AMQP_QUEUE_INJECT,
+                body=payload,
+                properties=pika.BasicProperties(
+                    delivery_mode=2,  # persistent
+                    content_type="application/json",
+                    message_id=job_id,
+                ),
+            )
+            logger.info("Published inject job %s with %d URLs", job_id, len(urls))
+            return
+        except (pika.exceptions.AMQPError, OSError) as exc:
+            logger.warning("AMQP publish failed (attempt %d/2): %s. Resetting connection.", attempt + 1, exc)
+            _reset_amqp_connection()
+            if attempt == 1:
+                raise
 
 
 # ------------------------------------------------------------------------------
