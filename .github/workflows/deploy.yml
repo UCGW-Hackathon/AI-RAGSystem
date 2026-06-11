@@ -60,6 +60,15 @@ jobs:
       packages: write   # allows pushing to ghcr.io
 
     steps:
+      - name: Free Disk Space
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h || true
+          docker system prune -a --volumes -f || true
+          docker builder prune -a -f || true
+          echo "=== Disk space after cleanup ==="
+          df -h || true
+
       - name: Checkout
         uses: actions/checkout@v4
 
